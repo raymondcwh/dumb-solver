@@ -8,3 +8,7 @@ def GetAllCGLevel():
 def GetAllPeriods(level):
     periods = os.listdir(os.path.join(HAND_HISTORY_FOLDER, level))
     return periods
+
+def GetAllSessions(period, level):
+    sessions = os.listdir(os.path.join(HAND_HISTORY_FOLDER, level, period))
+    return sessions
