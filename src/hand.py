@@ -5,7 +5,10 @@ import re
 class Hand:
     def __init__(self, info):
         self.pot = 0
-        self.preflop_open = -1
+        self.preflop_open = -1  # -1 - non-open, 0 - limp as first action, 1 - raise as first action
+        self.limp = False
+        self.postflop = False
+        self.multiway = False
         self.street_info = {}
         self.one_blind = False
         self.N8Parser(info)
@@ -33,9 +36,9 @@ class Hand:
         self.handID, self.sb, self.bb, self.dt = description.group("handID"), float(description.group("sb")), float(description.group("bb")), description.group("dt")
         players = [re.match(r".*\s(?P<seatN>\d+).*\s(?P<player>\w+).*\$(?P<stack>[\d\.]+).*", playerInfo).groupdict() for playerInfo in filter(lambda line: line.startswith("Seat"), positions)]
         
-        if len(positions[len(players):]) == 1:
+        if len(positions[len(players):]) < 2:
             self.one_blind = True
-            return
+            exit()
         
         btn_pos = list(map(lambda player: int(player["seatN"]), players)).index(btn_pos)
         seating = GetPositionsList(len(players))
@@ -51,15 +54,14 @@ class Hand:
         self.street_info["turn"] = list(map(lambda turn: self.ReadActions(turn), turn_list))
         self.river_card = list(map(lambda river: self.DealCards(river), river_list))
         self.street_info["river"] = list(map(lambda river: self.ReadActions(river), river_list))
-        # print(showdown)
-        # re.match(r"(?P<player>\w+).*?(?P<money>[\d\.]+).*$", showdown).groupdict()
+        self.street_run = [len(self.flop_board), len(self.turn_card), len(self.river_card)]
         pot_calculation = self.AnalyzeHand()
         showdown_list = list(map(lambda showdown: self.ReadActions(showdown, showdown=True), showdown_list))   # return list of list of dict
         showdown_list = list(map(lambda showdown: {res["player"]: res["money"] for res in showdown}, showdown_list))
         showdown = {player: sum(map(lambda showdown: float(showdown.get(player, 0)), showdown_list)) for player in set().union(*showdown_list)}
         self.pot_record, self.rake, self.jackpot, self.bingo, self.fortune = map(float, re.findall(r"\$([\d\.]+)", summary[1]))
         assert (self.pot_record == round(pot_calculation, 4)) or ((sum(showdown.values()) + self.rake + self.jackpot + self.bingo + self.fortune) == round(pot_calculation, 4)), f"Correct pot: {self.pot_record}"
-        pass
+        return
 
     def DealCards(self, street, board=True):
         assert isinstance(street, list)
@@ -81,11 +83,10 @@ class Hand:
     def GetGameFlow(self):
         gameflow = ["dead_money", "preflop"]
         postflop = ["flop", "turn", "river"]
-        street_run = [len(self.flop_board), len(self.turn_card), len(self.river_card)]
-        n_run = max(street_run)
+        n_run = max(self.street_run)
         if n_run > 1:
-            normal_street = postflop[:street_run.index(n_run)]
-            allin_street = postflop[street_run.index(n_run):]
+            normal_street = postflop[:self.street_run.index(n_run)]
+            allin_street = postflop[self.street_run.index(n_run):]
             gameflow.extend(normal_street)
             for i in range(n_run):
                 gameflow.extend(list(map(lambda street: f"{street}{i}", allin_street)))
@@ -95,14 +96,15 @@ class Hand:
 
     def AnalyzeHand(self):
         details = {}
-        limp = False
-        postflop = False
+        # limp = False
+        # postflop = False
         pot = 0
         gameflow = self.GetGameFlow()
         for i, street in enumerate(gameflow):
             street_type, n_run = re.match(r"([a-z_]+).*?(\d)?$", street).groups()
             n_run = int(n_run) if n_run else 0
             actions = self.street_info[street_type]
+            n_bet = 0
             if street_type in ["flop", "turn", "river"]:
                 actions = actions[n_run] if actions else actions
             if street_type != "preflop":
@@ -119,11 +121,13 @@ class Hand:
             caller = []
             details[street] = {}
             if i > 1:
-                postflop = True
+                self.postflop = True
+            n_way = len(set(map(lambda action: action["player"], actions))) if self.postflop else None
+            if n_way and n_way > 2:
+                self.multiway = True
             for action in actions:
                 action["action"] = action["action"].rstrip("s")
                 if action["action"][0].isupper():
-                    # print(action)
                     if action["action"].casefold() == "bet":
                         if action["money_cards"].find("fold") != -1:
                             action["money_cards"] = None
@@ -134,7 +138,6 @@ class Hand:
                         if re.search(r"[\d\.]+", action["money_cards"]):
                             self.cashout_fee = float(action["money_cards"])
                         continue
-                    # print(action)
                 if street_type == "dead_money":
                     if action["type"] == "missed":
                         pot += float(action["money_cards"])
@@ -142,7 +145,6 @@ class Hand:
                     elif action["action"] == "straddle":
                         self.players[action["player"]]["straddle"] = float(action["money_cards"])
                 if action["action"] not in ["fold", "check"]:
-                    # print(action)
                     if action["action"] == "call":
                         bet[action["player"]] = ((bet[action["player"]]+float(action["money_cards"])) if action["player"] in bet.keys() else float(action["money_cards"])) if action["allin"] else max(bet.values())
                         # bet[action["player"]] = max(bet.values()) if action["allin"] else max(bet.values())
@@ -154,45 +156,42 @@ class Hand:
                         action["money_cards"] = ReorderCards(action["money_cards"].replace(" ", ""))
                     else:
                         bet[action["player"]] = float(action["money_cards"])
-                        if (self.preflop_open == -1) and (street_type == "preflop"):
-                            self.preflop_open = 1
                         if street_type != "dead_money":
+                            if street_type == "preflop":
+                                if (self.preflop_open == -1):
+                                    self.preflop_open = 1
+                                else:
+                                    ...
+                            n_bet += 1
                             aggressor = action["player"]
                             caller.clear()
                 if (street_type == "preflop") and (action["player"] not in map(lambda s: s["player"], key_actions)) and (action["action"] == "fold"):
                     continue
                 action["allin"] = action["allin"] is not None
                 key_actions.append(action)
-            if street_type == "preflop" and aggressor is None and caller:
-                limp = True
-            # print(f"limp pot: {limp}")
-            # print(key_actions)
-            # print(f"Agg {aggressor}, Call {caller}")
-            # print(f"betting: {bet}")
-            # and caller
-            print(bet)
             if bet:
                 max_bet = max(bet.values())
+                # n_equal_bets = len(list(filter(lambda b: b == max_bet, bet.values())))
+                if street_type == "preflop":
+                    self.limp = (self.preflop_open == 0) and (max_bet == self.bb)
+                    # if n_equal_bets > 1:
+                    #     self.limp = (max_bet == self.bb) and (self.preflop_open != -1)
+                    self.preflop_allin = len(list(filter(lambda action: action["allin"], key_actions))) > 1
                 if (street_type != "dead_money") and len(list(filter(lambda b: b == max_bet, bet.values()))) > 1:
                     pot += sum(bet.values())
                 elif aggressor:
                     bet.pop(aggressor)
-                    # print(bet)
                     pot += (max(bet.values()) + sum(bet.values())) if bet else 0
-            print(pot)
-            details[street].update({"actions": key_actions, "pot": (pot + sum(bet.values())) if street_type == "dead_money" else pot, "aggressor": aggressor})
-            # , "n_way": len(bet.values())-len(set(bet.values()))+1
+            details[street].update({"actions": key_actions, "pot": (pot + sum(bet.values())) if street_type == "dead_money" else pot, "aggressor": aggressor, "n_way": n_way, "n_bet": n_bet})
         
         # print(bet)
-        self.limp = limp
-        self.postflop = postflop
-        # print(postflop)
         self.street_info = details
         print(self.handID, self.dt)
         print(self.street_info)
-        # print(self.final_pot)
-        # print(round(pot, 4))
-        # assert self.pot_record == round(pot, 4), f"Correct pot: {self.pot_record}"
+        print(self.preflop_open)
+        print(self.limp)
+        print(self.preflop_allin)
+        print(self.postflop)
         return pot
 
     def GetStandardBoardHands(self, standard=False):

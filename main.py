@@ -19,7 +19,7 @@ if __name__ == "__main__":
     # print(tmp)
 
 
-    level = GetAllCGLevel()[0]
+    level = GetAllCGLevel()[1]
     history = GetAllPeriods(level)[0]
     sessions = GetAllSessions(history, level)
     break_loop = False
@@ -29,8 +29,12 @@ if __name__ == "__main__":
         hands = list(map(lambda history: history.strip(), hand_histories.split("\n\n")))
         for i, hand in enumerate(hands):
             x = Hand(hand)
-            if len(x.GetGameFlow()) > 7:
-                break
+            # if len(x.GetGameFlow()) > 7:
+            #     break_loop = True
+            #     break
+            # if x.multiway:
+            #     break_loop = True
+            #     break
             if x.one_blind:
                 break_loop = True
                 break
