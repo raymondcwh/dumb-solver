@@ -5,12 +5,10 @@ import re
 class Hand:
     def __init__(self, info):
         self.pot = 0
-        self.preflop_open = -1  # -1 - non-open, 0 - limp as first action, 1 - raise as first action
-        self.limp = False
+        self.straddle = 0
+        self.preflop_open = False
         self.postflop = False
-        self.multiway = False
         self.street_info = {}
-        self.one_blind = False
         self.N8Parser(info)
         pass
 
@@ -27,24 +25,14 @@ class Hand:
         turn_list = list(filter(lambda section: section[0].startswith("***") and (section[0].lower().find("turn") != -1), sections)).copy()
         river_list = list(filter(lambda section: section[0].startswith("***") and (section[0].lower().find("river") != -1), sections)).copy()
         showdown_list = list(filter(lambda section: section[0].startswith("***") and (section[0].lower().find("showdown") != -1), sections)).copy()
-
-        # while (len(sections) < 7):
-            # sections.insert(-2, None)
-        
-        # positions, preflop, flop, turn, river, showdown, summary = sections
-
         self.handID, self.sb, self.bb, self.dt = description.group("handID"), float(description.group("sb")), float(description.group("bb")), description.group("dt")
         players = [re.match(r".*\s(?P<seatN>\d+).*\s(?P<player>\w+).*\$(?P<stack>[\d\.]+).*", playerInfo).groupdict() for playerInfo in filter(lambda line: line.startswith("Seat"), positions)]
-        
-        if len(positions[len(players):]) < 2:
-            self.one_blind = True
-            exit()
         
         btn_pos = list(map(lambda player: int(player["seatN"]), players)).index(btn_pos)
         seating = GetPositionsList(len(players))
         while seating[btn_pos] != "BTN":
             seating.append(seating.pop(0))
-        self.players = {player["player"]: {"seatN": player["seatN"], "position": seating[i], "stack": float(player["stack"])} for i, player in enumerate(players)}
+        self.players = {player["player"]: {"seatN": int(player["seatN"]), "position": seating[i], "stack": float(player["stack"])} for i, player in enumerate(players)}
         self.street_info["dead_money"] = self.ReadActions(positions[len(players):], dead=True)
         self.players["Hero"]["cards"] = self.DealCards(preflop, False)
         self.street_info["preflop"] = self.ReadActions(preflop)
@@ -56,11 +44,15 @@ class Hand:
         self.street_info["river"] = list(map(lambda river: self.ReadActions(river), river_list))
         self.street_run = [len(self.flop_board), len(self.turn_card), len(self.river_card)]
         pot_calculation = self.AnalyzeHand()
-        showdown_list = list(map(lambda showdown: self.ReadActions(showdown, showdown=True), showdown_list))   # return list of list of dict
+        showdown_list = list(map(lambda showdown: self.ReadActions(showdown, showdown=True), showdown_list))
         showdown_list = list(map(lambda showdown: {res["player"]: res["money"] for res in showdown}, showdown_list))
-        showdown = {player: sum(map(lambda showdown: float(showdown.get(player, 0)), showdown_list)) for player in set().union(*showdown_list)}
+        self.showdown = {player: sum(map(lambda showdown: float(showdown.get(player, 0)), showdown_list)) for player in set().union(*showdown_list)}
         self.pot_record, self.rake, self.jackpot, self.bingo, self.fortune = map(float, re.findall(r"\$([\d\.]+)", summary[1]))
-        assert (self.pot_record == round(pot_calculation, 4)) or ((sum(showdown.values()) + self.rake + self.jackpot + self.bingo + self.fortune) == round(pot_calculation, 4)), f"Correct pot: {self.pot_record}"
+        assert (self.pot_record == round(pot_calculation, 4)) or ((sum(self.showdown.values()) + self.rake + self.jackpot + self.bingo + self.fortune) == round(pot_calculation, 4)), f"Correct pot: {self.pot_record}"
+        # if self.hero_involved:
+            # self.GetHandClassification()
+        # print(self.GetHandClassification())
+        # boards = self.GetStandardBoardHands()
         return
 
     def DealCards(self, street, board=True):
@@ -96,10 +88,11 @@ class Hand:
 
     def AnalyzeHand(self):
         details = {}
-        # limp = False
+        self.limp = {}
         # postflop = False
         pot = 0
         gameflow = self.GetGameFlow()
+        players = set(self.players.keys())
         for i, street in enumerate(gameflow):
             street_type, n_run = re.match(r"([a-z_]+).*?(\d)?$", street).groups()
             n_run = int(n_run) if n_run else 0
@@ -120,11 +113,9 @@ class Hand:
                 aggressor = None
             caller = []
             details[street] = {}
-            if i > 1:
+            if i > 1 and not self.preflop_allin:
                 self.postflop = True
-            n_way = len(set(map(lambda action: action["player"], actions))) if self.postflop else None
-            if n_way and n_way > 2:
-                self.multiway = True
+            n_way = len(players) if self.postflop else None
             for action in actions:
                 action["action"] = action["action"].rstrip("s")
                 if action["action"][0].isupper():
@@ -144,12 +135,12 @@ class Hand:
                         continue
                     elif action["action"] == "straddle":
                         self.players[action["player"]]["straddle"] = float(action["money_cards"])
+                        self.straddle += 1
                 if action["action"] not in ["fold", "check"]:
                     if action["action"] == "call":
                         bet[action["player"]] = ((bet[action["player"]]+float(action["money_cards"])) if action["player"] in bet.keys() else float(action["money_cards"])) if action["allin"] else max(bet.values())
-                        # bet[action["player"]] = max(bet.values()) if action["allin"] else max(bet.values())
-                        if (self.preflop_open == -1) and (street_type == "preflop"):
-                            self.preflop_open = 0
+                        if (not self.preflop_open) and (street_type == "preflop"):
+                            self.limp[action["player"]] = 0
                         if action["player"] not in caller:
                             caller.append(action["player"])
                     elif action["action"] == "show":
@@ -158,44 +149,97 @@ class Hand:
                         bet[action["player"]] = float(action["money_cards"])
                         if street_type != "dead_money":
                             if street_type == "preflop":
-                                if (self.preflop_open == -1):
-                                    self.preflop_open = 1
-                                else:
-                                    ...
+                                if not self.preflop_open:
+                                    self.preflop_open = True
+                                elif action["player"] in self.limp.keys():
+                                    self.limp[action["player"]] = 1
                             n_bet += 1
                             aggressor = action["player"]
                             caller.clear()
+                elif action["action"] == "fold":
+                    players.discard(action["player"])
                 if (street_type == "preflop") and (action["player"] not in map(lambda s: s["player"], key_actions)) and (action["action"] == "fold"):
                     continue
                 action["allin"] = action["allin"] is not None
                 key_actions.append(action)
             if bet:
                 max_bet = max(bet.values())
-                # n_equal_bets = len(list(filter(lambda b: b == max_bet, bet.values())))
+                # if street_type == "dead_money":
+                #     self.straddle_pot = max_bet > self.bb
+                # elif street_type == "preflop":
                 if street_type == "preflop":
-                    self.limp = (self.preflop_open == 0) and (max_bet == self.bb)
-                    # if n_equal_bets > 1:
-                    #     self.limp = (max_bet == self.bb) and (self.preflop_open != -1)
-                    self.preflop_allin = len(list(filter(lambda action: action["allin"], key_actions))) > 1
+                    # self.hero_involved = any([player == "Hero" for player, bet_value in bet.items() if bet_value == max_bet]) or any(map(lambda action: (action["player"] == "Hero") and (action["allin"]), key_actions))
+                    # self.hero_involved = any(map(lambda action: action["player"] == "Hero", key_actions))
+                    allin_n = len(list(filter(lambda action: action["allin"], key_actions))) + len(list(filter(lambda action: action["allin"], details["dead_money"]["actions"])))
+                    self.preflop_allin = allin_n and ((len(players) - allin_n) <= 1) and (len(players) > 1)
+                    n_way = players.copy()
                 if (street_type != "dead_money") and len(list(filter(lambda b: b == max_bet, bet.values()))) > 1:
                     pot += sum(bet.values())
                 elif aggressor:
                     bet.pop(aggressor)
-                    pot += (max(bet.values()) + sum(bet.values())) if bet else 0
+                    pot += (max(bet.values()) + sum(bet.values())) if bet else 0   
             details[street].update({"actions": key_actions, "pot": (pot + sum(bet.values())) if street_type == "dead_money" else pot, "aggressor": aggressor, "n_way": n_way, "n_bet": n_bet})
-        
+    
         # print(bet)
+        self.hero_involved = self.postflop and ("Hero" in details["preflop"]["n_way"])
         self.street_info = details
-        print(self.handID, self.dt)
-        print(self.street_info)
-        print(self.preflop_open)
-        print(self.limp)
-        print(self.preflop_allin)
-        print(self.postflop)
+        # print(self.handID, self.dt)
+        # print(self.street_info)
+        # print(self.preflop_open)
+        # print(self.limp)
+        # print(self.preflop_allin)
+        # print(f"Hero involved: {self.hero_involved}")
+        # print(self.postflop)
         return pot
+    
+    def GetHandClassification(self):
+        category = []
+        straddle_allin = len(list(filter(lambda action: action['allin'], self.street_info['dead_money']['actions'])))
+        if self.straddle:
+            category.append(f"straddle{'_allin' if straddle_allin else ''}")
+        else:
+            category.append("standard")
+        n_bet = self.street_info["preflop"]["n_bet"]
+        if self.postflop:
+            limper = [limp for player, limp in self.limp.items() if player in self.street_info["preflop"]["n_way"]]
+            if self.preflop_open:
+                if n_bet == 1:
+                    category.append(f"{'limp-call_' if limper else ''}SRP")
+                else:
+                    category.append(f"{'limp-raise_' if any(limper) else ''}{(n_bet+1)}-bet")
+                if len(self.street_info["preflop"]["n_way"]) == 2:
+                    aggressor = self.street_info["preflop"]["aggressor"]
+                    caller = self.street_info["preflop"]["n_way"].difference({aggressor}).pop()
+                    # print(aggressor)
+                    # print(caller)
+                    category.append(f"{self.players[aggressor]['position']}_vs_{self.players[caller]['position']}")
+                else:
+                    category.append(f"multiway")
+            else:
+                category.append(f"{'limp' if limper else 'unopened'}")
+                category.append(f"{'multiway' if len(self.street_info['preflop']['n_way']) > 2 else 'HU'}")
+        elif self.preflop_allin:
+            if straddle_allin:
+                allin = f"{'isolated' if len(self.street_info['preflop']['n_way']) == 2 else 'multiway'}"
+            else:
+                allin = f"{f'{(n_bet+1)}-bet' if (n_bet > 1) else 'raise'}_allin"
+            category.append(allin)
+        else:
+            takepot = f"{f'{(n_bet+1)}-bet' if (n_bet > 1) else ('raise' if (n_bet == 1) else 'all')}_fold"
+            category.append(takepot)
+        return category
 
     def GetStandardBoardHands(self, standard=False):
-        pass
+        boards = [self.flop_board, self.turn_card, self.river_card]
+        n_run = max(self.street_run)
+        if n_run:
+            n_run_idx = self.street_run.index(n_run)
+            boards = list(map(lambda i: sum(boards[:n_run_idx], []) + list(map(lambda street: street[i] if street else "", boards[n_run_idx:])) + [self.players["Hero"]["cards"]], range(n_run)))
+            if standard:
+                boards = list(map(lambda run: StandardizeBoardHand(*run), boards))
+            return boards
+        else:
+            return None
 
     def Translate(self, bb=True, position=True):
         street_actions = [list(map(lambda action: self.players[action["player"]]["position"], info["actions"])) for street, info in self.street_info.items() if info]
