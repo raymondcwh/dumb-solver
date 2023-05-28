@@ -1,4 +1,6 @@
 import os
+import numpy as np
+import json
 from private.paths import *
 from .hand import Hand
 
@@ -28,6 +30,7 @@ def GetAllSessions(period, level, site):
 def GetHandReview(sessions):
     processed_hands = {}
     solver_flops = {}
+    h2n_hands = []
     for session in sessions:
         with open(session, "r") as f:
             hand_histories = f.read().strip()
@@ -35,6 +38,7 @@ def GetHandReview(sessions):
             map(lambda history: history.strip(), hand_histories.split("\n\n")))
         for hand in hands:
             handObj = Hand(hand)
+            h2n_hands.append(handObj.h2n)
             if handObj.hero_involved:
                 category = handObj.GetHandClassification()
                 categoryKey = "\\".join(category)
@@ -47,7 +51,26 @@ def GetHandReview(sessions):
                     boards = handObj.GetStandardBoardHands(True)
                     for board in boards:
                         solver_flops[categoryKey].add(board[0])
-    return [processed_hands, solver_flops]
+        print(session, h2n_hands.__len__())
+    return [processed_hands, solver_flops, "\n\n".join(h2n_hands)]
+
+
+def ConvertH2N(sessions):
+    all_hands = []
+    for session in sessions:
+        with open(session, "r") as f:
+            hand_histories = f.read().strip()
+        hands = list(
+            map(lambda history: history.strip(), hand_histories.split("\n\n")))
+        for hand in hands:
+            lines = hand.splitlines()
+            lines[0] = lines[0].replace("Poker", "Pokerstars").replace("#HD", "#20")
+            lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
+            summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
+            lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
+            all_hands.append("\n".join(lines))
+    print(all_hands.__len__())
+    return "\n\n".join(all_hands)
 
 
 def GetExistingSolverFlops(folder):
@@ -61,37 +84,52 @@ def GetExistingSolverFlops(folder):
         file_num += 1
     return [old_flops, str(file_num).zfill(4)]
 
-def UpdateDatabase():
+def UpdateDatabase(h2n_convert=True):
     solver_flops_new = {}
     sites = GetAllSites()
     for site in sites:
         levels = GetAllCGLevel(site)
         for level in levels:
             periods = GetAllPeriods(level, site)
-            last_update_file = os.path.join(
-                RAW_HAND_HISTORY_FOLDER, site, level, "last_update.txt")
+            last_update_file = os.path.join(RAW_HAND_HISTORY_FOLDER, site, level, "last_update.txt")
             if os.path.exists(last_update_file):
                 with open(last_update_file, "r") as f:
-                    last_update = f.readline()
-                periods = periods[(periods.index(last_update)+1):]
+                    last_update = json.loads(f.read())
+                solver_update = periods.index(last_update["solver"])
+                h2n_update = periods.index(last_update["h2n"])
+                update_start = min(solver_update, h2n_update)
+                periods = periods[(update_start+1):]
+            else:
+                solver_update = h2n_update = update_start = 0
+                last_update = {}
             if periods:
                 for period in periods:
                     sessions = GetAllSessions(period, level, site)
-                    review_hands, solver_flops = GetHandReview(sessions)
-                    for category, hands in review_hands.items():
-                        folder = os.path.join(
-                            PROCESSED_HAND_HISTORY_FOLDER, category)
-                        if not os.path.exists(folder):
-                            os.makedirs(folder)
-                        with open(os.path.join(folder, f"{site}_{level}_{period}.txt"), "w") as f:
-                            f.write("\n\n\n".join(hands))
-                    for category, flops in solver_flops.items():
-                        if category in solver_flops_new.keys():
-                            solver_flops_new[category] = solver_flops_new[category].union(flops)
-                        else:
-                            solver_flops_new[category] = flops
+                    review_hands, solver_flops, h2n_hands = GetHandReview(sessions)
+                    if update_start >= solver_update:
+                        for category, hands in review_hands.items():
+                            folder = os.path.join(PROCESSED_HAND_HISTORY_FOLDER, category)
+                            if not os.path.exists(folder):
+                                os.makedirs(folder)
+                            with open(os.path.join(folder, f"{site}_{level}_{period}.txt"), "w") as f:
+                                f.write("\n\n\n".join(hands))
+                        for category, flops in solver_flops.items():
+                            if category in solver_flops_new.keys():
+                                solver_flops_new[category] = solver_flops_new[category].union(flops)
+                            else:
+                                solver_flops_new[category] = flops
+                        last_update["solver"] = period
+                    if update_start >= h2n_update:
+                        if h2n_convert:
+                            h2n_path = os.path.join(H2N_HAND_HISTORY_FOLDER, site)
+                            if not os.path.exists(h2n_path):
+                                os.makedirs(h2n_path)
+                            with open(os.path.join(h2n_path, f"{level}_{period}.txt"), "w") as f:
+                                f.write(h2n_hands)
+                            last_update["h2n"] = period
+                    update_start += 1
                 with open(last_update_file, "w") as f:
-                    f.write(period)
+                    f.write(json.dumps(last_update))
     for category, flops in solver_flops_new.items():
         folder = os.path.join(SOLVER_FLOP_FOLDER, category)
         if not os.path.exists(folder):

@@ -3,17 +3,19 @@ import numpy as np
 import re
 
 class Hand:
-    def __init__(self, info):
+    def __init__(self, info, n8=True):
         self.pot = 0
         self.straddle = 0
         self.preflop_open = False
         self.postflop = False
         self.street_info = {}
+        self.n8 = n8
         self.N8Parser(info)
         pass
 
     def N8Parser(self, info):
         lines = info.splitlines()
+        self.h2n = self.ConvertH2N(lines.copy())
         description = re.match(r".*#(?P<handID>\w+).*\$(?P<sb>[\d\.]+)\/\$(?P<bb>[\d\.]+).*\- (?P<dt>.+)$", lines.pop(0))
         btn_pos = int(re.match(r".*#(?P<btnPos>\d+).*", lines.pop(0)).group("btnPos"))
         split_index = [i for i, line in enumerate(lines) if line.startswith("***")]
@@ -45,12 +47,30 @@ class Hand:
         self.street_run = [len(self.flop_board), len(self.turn_card), len(self.river_card)]
         pot_calculation = self.AnalyzeHand()
         showdown_list = list(map(lambda showdown: self.ReadActions(showdown, showdown=True), showdown_list))
-        showdown_list = list(map(lambda showdown: {res["player"]: res["money"] for res in showdown}, showdown_list))
-        self.showdown = {player: sum(map(lambda showdown: float(showdown.get(player, 0)), showdown_list)) for player in set().union(*showdown_list)}
-        self.pot_record, self.rake, self.jackpot, self.bingo, self.fortune = map(float, re.findall(r"\$([\d\.]+)", summary[1]))
-        assert (self.pot_record == round(pot_calculation, 4)) or ((sum(self.showdown.values()) + self.rake + self.jackpot + self.bingo + self.fortune) == round(pot_calculation, 4)), f"Correct pot: {self.pot_record}"
+        # showdown_list = list(map(lambda showdown: {res["player"]: float(res["money"]) for res in showdown}, showdown_list))
+        tmp_showdown_list = []
+        for showdown in showdown_list:
+            tmp_showdown = {}
+            for res in showdown:
+                if res["player"] not in tmp_showdown.keys():
+                    tmp_showdown[res["player"]] = float(res["money"])
+                else:
+                    tmp_showdown[res["player"]] += float(res["money"])
+            tmp_showdown_list.append(tmp_showdown)
+        showdown_list = tmp_showdown_list
+        self.showdown = {player: sum(map(lambda showdown: showdown.get(player, 0), showdown_list)) for player in set().union(*showdown_list)}
+        self.other_fees = []
+        self.pot_record, self.rake, *self.other_fees = map(float, re.findall(r"\$([\d\.]+)", summary[1]))
+        pre_rake_pot = (sum(self.showdown.values()) + self.rake + sum(self.other_fees))
+        if (self.pot_record - self.rake - sum(self.other_fees)) != sum(self.showdown.values()):
+            if (self.rake / self.pot_record) <= 0.05:
+                assert (abs(pot_calculation - pre_rake_pot) < self.bb) or (abs(pot_calculation - (pre_rake_pot - sum(self.other_fees))) < self.bb), f"Pot record: {pre_rake_pot}, Pot calculated: {pot_calculation}"
+            else:
+                self.rake = self.pot_record - sum(self.showdown.values())
+        else:
+            assert (self.pot_record == round(pot_calculation, 4)) or ((sum(self.showdown.values()) + self.rake + sum(self.other_fees)) == round(pot_calculation, 4)), f"Correct pot: {self.pot_record}, Pot calculated: {pot_calculation}"
         # if self.hero_involved:
-            # self.GetHandClassification()
+            # self.GetHandClassification()5
         # print(self.GetHandClassification())
         # boards = self.GetStandardBoardHands()
         return
@@ -130,6 +150,15 @@ class Hand:
                             self.cashout_fee = float(action["money_cards"])
                         continue
                 if street_type == "dead_money":
+                    if action["action"] == "blind":
+                        if action["type"] == "small":
+                            if self.sb <= (self.bb/2):
+                                if (float(action["money_cards"]) != self.sb):
+                                    action["money_cards"] = str(self.sb)
+                            else:
+                                self.sb = float(action["money_cards"])
+                        elif action["type"] == "big":
+                            action["money_cards"] = action["money_cards"] if float(action["money_cards"]) == self.bb else str(self.bb)
                     if action["type"] == "missed":
                         pot += float(action["money_cards"])
                         continue
@@ -253,4 +282,11 @@ class Hand:
 
         """
         return summary
-
+    
+    def ConvertH2N(self, lines):
+        if self.n8:
+            lines[0] = lines[0].replace("Poker", "Pokerstars").replace("#HD", "#20")
+            lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
+            summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
+            lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
+        return "\n".join(lines)
