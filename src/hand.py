@@ -14,8 +14,8 @@ class Hand:
         pass
 
     def N8Parser(self, info):
+        self.h2n = info
         lines = info.splitlines()
-        self.h2n = self.ConvertH2N(lines.copy())
         description = re.match(r".*#(?P<handID>\w+).*\$(?P<sb>[\d\.]+)\/\$(?P<bb>[\d\.]+).*\- (?P<dt>.+)$", lines.pop(0))
         btn_pos = int(re.match(r".*#(?P<btnPos>\d+).*", lines.pop(0)).group("btnPos"))
         split_index = [i for i, line in enumerate(lines) if line.startswith("***")]
@@ -283,10 +283,10 @@ class Hand:
         """
         return summary
     
-    def ConvertH2N(self, lines):
-        if self.n8:
-            lines[0] = lines[0].replace("Poker", "Pokerstars").replace("#HD", "#20")
-            lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
-            summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
-            lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
-        return "\n".join(lines)
+    # def ConvertH2N(self, lines):
+    #     if self.n8:
+    #         lines[0] = lines[0].replace("Poker", "Pokerstars").replace("#HD", "#20")
+    #         lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
+    #         summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
+    #         lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
+    #     return "\n".join(lines)

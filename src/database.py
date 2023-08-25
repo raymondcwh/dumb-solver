@@ -52,25 +52,26 @@ def GetHandReview(sessions):
                     for board in boards:
                         solver_flops[categoryKey].add(board[0])
         print(session, h2n_hands.__len__())
-    return [processed_hands, solver_flops, "\n\n".join(h2n_hands)]
+    h2n_hands = ["\n\n".join(h2n_hands[i:(i+25000)]) for i in range(0, len(h2n_hands), 25000)]
+    return [processed_hands, solver_flops, h2n_hands]
 
 
-def ConvertH2N(sessions):
-    all_hands = []
-    for session in sessions:
-        with open(session, "r") as f:
-            hand_histories = f.read().strip()
-        hands = list(
-            map(lambda history: history.strip(), hand_histories.split("\n\n")))
-        for hand in hands:
-            lines = hand.splitlines()
-            lines[0] = lines[0].replace("Poker", "Pokerstars").replace("#HD", "#20")
-            lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
-            summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
-            lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
-            all_hands.append("\n".join(lines))
-    print(all_hands.__len__())
-    return "\n\n".join(all_hands)
+# def ConvertH2N(sessions):
+#     all_hands = []
+#     for session in sessions:
+#         with open(session, "r") as f:
+#             hand_histories = f.read().strip()
+#         hands = list(
+#             map(lambda history: history.strip(), hand_histories.split("\n\n")))
+#         for hand in hands:
+#             lines = hand.splitlines()
+#             lines[0] = lines[0].replace("Poker", "PokerStars").replace("#HD", "#20")
+#             lines = list(filter(lambda line: (line.casefold().find("dealt to") == -1) or (line.casefold().find("hero") != -1) , lines))
+#             summary_idx = [i for i, line in enumerate(lines) if line.startswith("***")][-1]
+#             lines[summary_idx:] = list(map(lambda line: line.replace("won", "collected"), lines[summary_idx:]))
+#             all_hands.append("\n".join(lines))
+#     print(all_hands.__len__())
+#     return "\n\n".join(all_hands)
 
 
 def GetExistingSolverFlops(folder):
@@ -106,40 +107,42 @@ def UpdateDatabase(h2n_convert=True):
                 for period in periods:
                     sessions = GetAllSessions(period, level, site)
                     review_hands, solver_flops, h2n_hands = GetHandReview(sessions)
-                    if update_start >= solver_update:
-                        for category, hands in review_hands.items():
-                            folder = os.path.join(PROCESSED_HAND_HISTORY_FOLDER, category)
-                            if not os.path.exists(folder):
-                                os.makedirs(folder)
-                            with open(os.path.join(folder, f"{site}_{level}_{period}.txt"), "w") as f:
-                                f.write("\n\n\n".join(hands))
-                        for category, flops in solver_flops.items():
-                            if category in solver_flops_new.keys():
-                                solver_flops_new[category] = solver_flops_new[category].union(flops)
-                            else:
-                                solver_flops_new[category] = flops
-                        last_update["solver"] = period
+                    # if update_start >= solver_update:
+                    #     for category, hands in review_hands.items():
+                    #         folder = os.path.join(PROCESSED_HAND_HISTORY_FOLDER, category)
+                    #         if not os.path.exists(folder):
+                    #             os.makedirs(folder)
+                    #         with open(os.path.join(folder, f"{site}_{level}_{period}.txt"), "w") as f:
+                    #             f.write("\n\n\n".join(hands))
+                    #     for category, flops in solver_flops.items():
+                    #         if category in solver_flops_new.keys():
+                    #             solver_flops_new[category] = solver_flops_new[category].union(flops)
+                    #         else:
+                    #             solver_flops_new[category] = flops
+                    #     last_update["solver"] = period
                     if update_start >= h2n_update:
                         if h2n_convert:
-                            h2n_path = os.path.join(H2N_HAND_HISTORY_FOLDER, site)
+                            h2n_path = os.path.join(H2N_HAND_HISTORY_FOLDER, "non_convert", site)
                             if not os.path.exists(h2n_path):
                                 os.makedirs(h2n_path)
-                            with open(os.path.join(h2n_path, f"{level}_{period}.txt"), "w") as f:
-                                f.write(h2n_hands)
+                            # print(h2n_hands.__sizeof__())
+                            for i, h2n_hands_chunk in enumerate(h2n_hands):
+                                with open(os.path.join(h2n_path, f"{level}_{period}_{i}.txt"), "w") as f:
+                                    f.write(h2n_hands_chunk)
                             last_update["h2n"] = period
                     update_start += 1
                 with open(last_update_file, "w") as f:
                     f.write(json.dumps(last_update))
-    for category, flops in solver_flops_new.items():
-        folder = os.path.join(SOLVER_FLOP_FOLDER, category)
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-        old_flops, file_num = GetExistingSolverFlops(folder)
-        with open(os.path.join(folder, f"{file_num}.txt"), "w") as f:
-            f.write("\n".join(list(flops.difference(old_flops))))
-        gto_folder = os.path.join(SOLVER_FILE_FOLDER, category)
-        if not os.path.exists(gto_folder):
-            os.makedirs(gto_folder)
-        with open(os.path.join(gto_folder, f"{file_num}.gto"), "x") as f:
-            pass
+    # for category, flops in solver_flops_new.items():
+    #     folder = os.path.join(SOLVER_FLOP_FOLDER, category)
+    #     if not os.path.exists(folder):
+    #         os.makedirs(folder)
+    #     old_flops, file_num = GetExistingSolverFlops(folder)
+    #     with open(os.path.join(folder, f"{file_num}.txt"), "w") as f:
+    #         f.write("\n".join(list(flops.difference(old_flops))))
+    #     gto_folder = os.path.join(SOLVER_FILE_FOLDER, category)
+    #     if not os.path.exists(gto_folder):
+    #         os.makedirs(gto_folder)
+    #     with open(os.path.join(gto_folder, f"{file_num}.gto"), "x") as f:
+    #         pass
     return
